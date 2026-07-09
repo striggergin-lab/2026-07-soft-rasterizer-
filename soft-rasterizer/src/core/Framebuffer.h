@@ -99,7 +99,7 @@ struct Framebuffer {
                         }
                     }
                 } else {
-                    color[idx] = 0xFF404060;
+                    color[idx] = 0xFF888890;
                     depth[idx] = std::numeric_limits<float>::infinity();
                 }
             }

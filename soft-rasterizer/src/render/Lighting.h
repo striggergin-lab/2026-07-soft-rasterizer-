@@ -11,9 +11,20 @@ struct DirectionalLight {
     float shininess = 32.f;
 };
 
-// 【重点】Blinn-Phong 光照 + 法线贴图 TBN 变换
+struct PointLight {
+    Vec3 position{3.f, 5.f, 3.f};
+    Vec3 color{1.f, 0.98f, 0.92f};
+    float ambient = 0.38f;
+    float diffuse = 0.95f;
+    float specular = 0.45f;
+    float shininess = 48.f;
+    float attenuation = 0.08f;
+};
+
 Vec3 blinnPhong(const Vec3& fragPos, const Vec3& normal, const Vec3& viewPos, const Vec3& albedo,
                 const DirectionalLight& light);
 
-// 切线空间法线 → 世界空间（TBN 矩阵）
+Vec3 blinnPhongPoint(const Vec3& fragPos, const Vec3& normal, const Vec3& viewPos, const Vec3& albedo,
+                     const PointLight& light, float shadowFactor = 1.f);
+
 Vec3 tangentToWorld(const Vec3& normalTangent, const Vec3& worldNormal, const Vec3& worldTangent);

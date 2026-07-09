@@ -3,11 +3,13 @@
 #include "core/Camera.h"
 #include "core/Framebuffer.h"
 #include "core/Mesh.h"
+#include "core/SceneObject.h"
 #include "math/Mat4.h"
 #include "math/Vec2.h"
 #include "math/Vec4.h"
 #include "render/Lighting.h"
 #include "render/MaterialLibrary.h"
+#include "render/ShadowMap.h"
 #include "render/Texture.h"
 
 #include <array>
@@ -33,9 +35,10 @@ struct ShadedFragment {
 
 struct Rasterizer {
     Framebuffer fb;
+    ShadowMap shadowMap;
     RenderMode mode = RenderMode::Solid;
     DirectionalLight light{};
-    Mat4 model = Mat4::identity();
+    PointLight pointLight{};
 
     MaterialLibrary materials;
     Texture albedoMap;
@@ -43,23 +46,44 @@ struct Rasterizer {
     bool normalMappingEnabled = true;
     bool normalMapFlipY = false;
 
+    bool shadowSceneEnabled = true;
+    Vec3 lightTarget{0.f, 0.f, 0.f};
+    float lightMoveSpeed = 4.f;
+    float shadowBias = 0.02f;
+
+    Mat4 model = Mat4::identity();
+    Mat4 lightViewProj = Mat4::identity();
+
     Rasterizer();
 
     bool loadMaterials();
     void nextMaterial();
     void prevMaterial();
-    void render(const Mesh& mesh, const Camera& camera, float aspect);
+    void moveLight(float dx, float dy, float dz);
+
+    void renderScene(const std::vector<SceneObject>& objects, const Camera& camera, float aspect);
 
 private:
     void applyCurrentMaterial();
 
+    void renderMeshShadow(const SceneObject& obj, const Mat4& lightViewProj);
+    void renderMeshMain(const SceneObject& obj, const Mat4& viewProj, const Vec3& cameraPos);
+
     std::optional<ShadedFragment> shadeAt(float px, float py, const Vec2& sa, const Vec2& sb,
                                           const Vec2& sc, const ClipVertex& a, const ClipVertex& b,
-                                          const ClipVertex& c, float areaInv,
-                                          const Vec3& cameraPos) const;
+                                          const ClipVertex& c, float areaInv, const SceneObject& obj,
+                                          int msaaSample, const Vec3& cameraPos) const;
 
-    void drawTriangle(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
-                      const Vec3& cameraPos);
+    std::optional<float> shadowDepthAt(float px, float py, const Vec2& sa, const Vec2& sb,
+                                       const Vec2& sc, const ClipVertex& a, const ClipVertex& b,
+                                       const ClipVertex& c, float areaInv) const;
+
+    void drawTriangleColor(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
+                           const SceneObject& obj, const Vec3& cameraPos);
+    void drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c);
+
+    void buildClipTriangles(const SceneObject& obj, const Mat4& mvp, std::vector<std::array<ClipVertex, 3>>& outTris);
+
     void drawLine(int x0, int y0, int x1, int y1, uint32_t color, float z);
     void drawPoint(int x, int y, uint32_t color, float z);
 

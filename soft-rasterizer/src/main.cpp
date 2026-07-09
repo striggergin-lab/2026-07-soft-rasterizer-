@@ -1,5 +1,6 @@
 #include "core/Camera.h"
 #include "core/Mesh.h"
+#include "core/SceneObject.h"
 #include "math/Mat4.h"
 #include "render/Rasterizer.h"
 
@@ -10,27 +11,33 @@
 #include <windowsx.h>
 
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace {
 
-constexpr float kPi = 3.14159265358979323846f;
+constexpr float kFloorSize = 10.f;
+constexpr float kCubeBaseY = 0.68f;
+constexpr uint32_t kBackgroundGray = 0xFF888890;
 
 struct AppState {
     Camera camera;
     Rasterizer rasterizer;
+    Mesh floor;
     Mesh cube;
+    Mesh lightSphere;
+    std::vector<SceneObject> scene;
     bool running = true;
     bool wireframe = false;
-    bool orbiting = false;       // 右键：绕场景旋转相机
-    bool modelRotating = false;  // 中键：绕模型中心旋转物体
+    bool cameraOrbiting = false;
+    bool cameraPanning = false;
+    bool modelRotating = false;
     int lastMouseX = 0;
     int lastMouseY = 0;
-    float angle = 0.f;         // 自动旋转（绕世界 Y）
-    Mat4 modelRot = Mat4::identity();  // 中键手动旋转（增量累积，无角度限制）
-    float modelRotateSpeed = 0.01f;
+    float angle = 0.f;
+    Mat4 modelRot = Mat4::identity();
+    float modelRotateSpeed = 0.012f;
     int width = 960;
     int height = 720;
     HDC memDC = nullptr;
@@ -41,15 +48,53 @@ struct AppState {
 AppState* gApp = nullptr;
 
 void updateWindowTitle(HWND hwnd, const AppState& app) {
-    wchar_t title[256]{};
+    wchar_t title[384]{};
+    const wchar_t* shadowState = app.rasterizer.shadowSceneEnabled ? L"开" : L"关";
     if (app.rasterizer.materials.empty()) {
-        swprintf(title, 256, L"Soft Rasterizer | 无材质 | ↑↓切换 F线框 M:MSAA N:法线");
+        swprintf(title, 384,
+                 L"Soft Rasterizer | 阴影:%s | 中键旋转相机 Shift+中键平移 右键旋转物体 | 滚轮缩放",
+                 shadowState);
     } else {
-        swprintf(title, 256, L"Soft Rasterizer | 材质: %hs (%d/%zu) | ↑↓切换 F线框 M:MSAA N:法线",
+        swprintf(title, 384,
+                 L"Soft Rasterizer | 材质:%hs (%d/%zu) | 阴影:%s | 右键旋转物体 WASD/QE移光源",
                  app.rasterizer.materials.currentName().c_str(),
-                 app.rasterizer.materials.currentIndex + 1, app.rasterizer.materials.count());
+                 app.rasterizer.materials.currentIndex + 1, app.rasterizer.materials.count(),
+                 shadowState);
     }
     SetWindowTextW(hwnd, title);
+}
+
+void rebuildScene(AppState& app) {
+    app.scene.clear();
+
+    SceneObject floorObj;
+    floorObj.mesh = &app.floor;
+    floorObj.model = Mat4::identity();
+    floorObj.material = ObjectMaterial::Flat;
+    floorObj.flatColor = {1.f, 1.f, 1.f};
+    floorObj.castShadow = true;
+    floorObj.receiveShadow = true;
+    app.scene.push_back(floorObj);
+
+    SceneObject cubeObj;
+    cubeObj.mesh = &app.cube;
+    cubeObj.model =
+        Mat4::translate({0.f, kCubeBaseY, 0.f}) * Mat4::rotateY(app.angle) * app.modelRot;
+    cubeObj.material = ObjectMaterial::Textured;
+    cubeObj.castShadow = true;
+    cubeObj.receiveShadow = true;
+    app.scene.push_back(cubeObj);
+
+    if (app.rasterizer.shadowSceneEnabled) {
+        SceneObject lightObj;
+        lightObj.mesh = &app.lightSphere;
+        lightObj.model = Mat4::translate(app.rasterizer.pointLight.position);
+        lightObj.material = ObjectMaterial::Emissive;
+        lightObj.emissiveColor = {1.f, 0.95f, 0.75f};
+        lightObj.castShadow = false;
+        lightObj.receiveShadow = false;
+        app.scene.push_back(lightObj);
+    }
 }
 
 bool createBackBuffer(AppState& app, HDC hdc) {
@@ -64,7 +109,7 @@ bool createBackBuffer(AppState& app, HDC hdc) {
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = app.width;
-    bmi.bmiHeader.biHeight = -app.height;  // top-down DIB
+    bmi.bmiHeader.biHeight = -app.height;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -112,22 +157,28 @@ void syncClientSize(AppState& app, HWND hwnd) {
 }
 
 void updateFrame(AppState& app, float dt) {
-    if (GetAsyncKeyState('A') & 0x8000) app.camera.moveRight(-dt);
-    if (GetAsyncKeyState('D') & 0x8000) app.camera.moveRight(dt);
-    if (GetAsyncKeyState('Q') & 0x8000) app.camera.moveUp(-dt);
-    if (GetAsyncKeyState('E') & 0x8000) app.camera.moveUp(dt);
+    if (app.rasterizer.shadowSceneEnabled) {
+        const float ls = app.rasterizer.lightMoveSpeed * dt;
+        if (GetAsyncKeyState('W') & 0x8000) app.rasterizer.moveLight(0.f, ls, 0.f);
+        if (GetAsyncKeyState('S') & 0x8000) app.rasterizer.moveLight(0.f, -ls, 0.f);
+        if (GetAsyncKeyState('A') & 0x8000) app.rasterizer.moveLight(-ls, 0.f, 0.f);
+        if (GetAsyncKeyState('D') & 0x8000) app.rasterizer.moveLight(ls, 0.f, 0.f);
+        if (GetAsyncKeyState('Q') & 0x8000) app.rasterizer.moveLight(0.f, 0.f, -ls);
+        if (GetAsyncKeyState('E') & 0x8000) app.rasterizer.moveLight(0.f, 0.f, ls);
+    }
 
-    if (!app.orbiting && !app.modelRotating) {
+    if (!app.cameraOrbiting && !app.cameraPanning && !app.modelRotating) {
         app.angle += dt * 0.8f;
     }
-    // 自动旋转（世界 Y）× 手动旋转（模型局部坐标，可无限累积）
-    app.rasterizer.model = Mat4::rotateY(app.angle) * app.modelRot;
+
+    app.rasterizer.model = Mat4::rotateY(app.angle);
     app.rasterizer.mode = app.wireframe ? RenderMode::Wireframe : RenderMode::Solid;
 
-    app.rasterizer.fb.clear();
+    rebuildScene(app);
+    app.rasterizer.fb.clear(kBackgroundGray);
     const float aspect =
         static_cast<float>(app.width) / static_cast<float>(app.height > 0 ? app.height : 1);
-    app.rasterizer.render(app.cube, app.camera, aspect);
+    app.rasterizer.renderScene(app.scene, app.camera, aspect);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -150,7 +201,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_ERASEBKGND:
-            return 1;  // 避免背景擦除覆盖我们的 BitBlt
+            return 1;
 
         case WM_TIMER: {
             static auto last = std::chrono::steady_clock::now();
@@ -170,6 +221,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (wParam == 'F') app.wireframe = !app.wireframe;
             if (wParam == 'M') app.rasterizer.fb.msaaEnabled = !app.rasterizer.fb.msaaEnabled;
             if (wParam == 'N') app.rasterizer.normalMappingEnabled = !app.rasterizer.normalMappingEnabled;
+            if (wParam == 'L') {
+                app.rasterizer.shadowSceneEnabled = !app.rasterizer.shadowSceneEnabled;
+                updateWindowTitle(hwnd, app);
+            }
             if (wParam == VK_UP) {
                 app.rasterizer.prevMaterial();
                 updateWindowTitle(hwnd, app);
@@ -180,28 +235,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
 
-        case WM_RBUTTONDOWN:
-            app.orbiting = true;
-            app.lastMouseX = GET_X_LPARAM(lParam);
-            app.lastMouseY = GET_Y_LPARAM(lParam);
-            SetCapture(hwnd);
-            return 0;
-
-        case WM_RBUTTONUP:
-            app.orbiting = false;
-            if (!app.modelRotating) ReleaseCapture();
-            return 0;
-
         case WM_MBUTTONDOWN:
-            app.modelRotating = true;
             app.lastMouseX = GET_X_LPARAM(lParam);
             app.lastMouseY = GET_Y_LPARAM(lParam);
+            if (GetKeyState(VK_SHIFT) & 0x8000) {
+                app.cameraPanning = true;
+            } else {
+                app.cameraOrbiting = true;
+            }
             SetCapture(hwnd);
             return 0;
 
         case WM_MBUTTONUP:
+            app.cameraOrbiting = false;
+            app.cameraPanning = false;
+            ReleaseCapture();
+            return 0;
+
+        case WM_RBUTTONDOWN:
+            app.lastMouseX = GET_X_LPARAM(lParam);
+            app.lastMouseY = GET_Y_LPARAM(lParam);
+            app.modelRotating = true;
+            SetCapture(hwnd);
+            return 0;
+
+        case WM_RBUTTONUP:
             app.modelRotating = false;
-            if (!app.orbiting) ReleaseCapture();
+            ReleaseCapture();
             return 0;
 
         case WM_MOUSEMOVE: {
@@ -210,16 +270,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             const float dx = static_cast<float>(x - app.lastMouseX);
             const float dy = static_cast<float>(y - app.lastMouseY);
 
-            if (app.orbiting) {
-                app.camera.rotate(dx, dy);
+            if (app.cameraPanning) {
+                app.camera.pan(dx, dy);
+            } else if (app.cameraOrbiting) {
+                app.camera.orbit(dx, dy);
+            } else if (app.modelRotating) {
+                app.modelRot =
+                    Mat4::rotateY(dx * app.modelRotateSpeed) * Mat4::rotateX(-dy * app.modelRotateSpeed) *
+                    app.modelRot;
             }
-            if (app.modelRotating) {
-                const Mat4 delta = Mat4::rotateY(dx * app.modelRotateSpeed) *
-                                   Mat4::rotateX(-dy * app.modelRotateSpeed);
-                // 在模型局部空间累积旋转，绕几何中心（原点），无俯仰角限制
-                app.modelRot = app.modelRot * delta;
-            }
-            if (app.orbiting || app.modelRotating) {
+            if (app.cameraOrbiting || app.cameraPanning || app.modelRotating) {
                 app.lastMouseX = x;
                 app.lastMouseY = y;
             }
@@ -248,8 +308,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     (void)hPrevInstance;
     (void)lpCmdLine;
     AppState app;
-    app.cube = Mesh::createCube(1.2f);
-    app.camera.syncOrbitPosition();
+    app.floor = Mesh::createFloor(kFloorSize);
+    app.cube = Mesh::createCube(0.8f);
+    app.lightSphere = Mesh::createSphere(0.12f, 14, 10);
+
+    // 等轴测：相机在立方体中心斜上方 (1,1,1) 方向，明确朝向中心
+    const Vec3 kObjectCenter{0.f, kCubeBaseY, 0.f};
+    const Vec3 kCameraPos{2.5f, 3.2f, 2.5f};
+    app.camera.setView(kObjectCenter, kCameraPos);
+
+    app.rasterizer.lightTarget = {0.f, kCubeBaseY, 0.f};
+    app.rasterizer.pointLight.position = {3.f, 4.f, 3.f};
+
     gApp = &app;
 
     WNDCLASS wc{};

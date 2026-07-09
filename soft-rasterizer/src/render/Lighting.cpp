@@ -33,3 +33,25 @@ Vec3 blinnPhong(const Vec3& fragPos, const Vec3& normal, const Vec3& viewPos, co
 
     return ambient + diffuse + spec;
 }
+
+Vec3 blinnPhongPoint(const Vec3& fragPos, const Vec3& normal, const Vec3& viewPos, const Vec3& albedo,
+                     const PointLight& light, float shadowFactor) {
+    const Vec3 n = normal.normalized();
+    const Vec3 toLight = light.position - fragPos;
+    const float dist = toLight.length();
+    const Vec3 l = toLight / (dist + 1e-6f);
+    const Vec3 v = (viewPos - fragPos).normalized();
+    const Vec3 h = (l + v).normalized();
+
+    const float ndotl = std::max(n.dot(l), 0.f);
+    const float ndoth = std::max(n.dot(h), 0.f);
+
+    const float att = 1.f / (1.f + light.attenuation * dist * dist);
+
+    const Vec3 ambient = albedo * light.ambient;
+    const Vec3 diffuse = albedo * (light.diffuse * ndotl * att * shadowFactor);
+    const Vec3 spec =
+        light.color * (light.specular * std::pow(ndoth, light.shininess) * att * shadowFactor);
+
+    return ambient + diffuse + spec;
+}

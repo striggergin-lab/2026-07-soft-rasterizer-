@@ -63,18 +63,21 @@ Mat4 Mat4::lookAt(const Vec3& eye, const Vec3& target, const Vec3& up) {
     const Vec3 r = f.cross(up).normalized();
     const Vec3 u = r.cross(f);
 
-    Mat4 rot = identity();
-    rot.m[0][0] = r.x;
-    rot.m[1][0] = r.y;
-    rot.m[2][0] = r.z;
-    rot.m[0][1] = u.x;
-    rot.m[1][1] = u.y;
-    rot.m[2][1] = u.z;
-    rot.m[0][2] = -f.x;
-    rot.m[1][2] = -f.y;
-    rot.m[2][2] = -f.z;
-
-    return rot * translate({-eye.x, -eye.y, -eye.z});
+    // 行主序 view 矩阵，与 transformPoint 的行点乘一致
+    Mat4 view = identity();
+    view.m[0][0] = r.x;
+    view.m[0][1] = r.y;
+    view.m[0][2] = r.z;
+    view.m[0][3] = -r.dot(eye);
+    view.m[1][0] = u.x;
+    view.m[1][1] = u.y;
+    view.m[1][2] = u.z;
+    view.m[1][3] = -u.dot(eye);
+    view.m[2][0] = -f.x;
+    view.m[2][1] = -f.y;
+    view.m[2][2] = -f.z;
+    view.m[2][3] = f.dot(eye);
+    return view;
 }
 
 Mat4 Mat4::operator*(const Mat4& o) const {

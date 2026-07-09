@@ -2,16 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-Mat4 normalMatrix(const Mat4& model) {
-    // 法线变换：模型矩阵的逆转置（此处仅旋转+均匀缩放时可简化为 model 旋转部分）
-    return model;
-}
+Mat4 normalMatrix(const Mat4& model) { return model; }
 
 Vec3 transformNormal(const Mat4& m, const Vec3& n) {
     Vec3 r{
@@ -22,11 +20,20 @@ Vec3 transformNormal(const Mat4& m, const Vec3& n) {
     return r.normalized();
 }
 
+Vec3 transformPoint3(const Mat4& m, const Vec3& p) {
+    return {
+        m.m[0][0] * p.x + m.m[0][1] * p.y + m.m[0][2] * p.z + m.m[0][3],
+        m.m[1][0] * p.x + m.m[1][1] * p.y + m.m[1][2] * p.z + m.m[1][3],
+        m.m[2][0] * p.x + m.m[2][1] * p.y + m.m[2][2] * p.z + m.m[2][3],
+    };
+}
+
 }  // namespace
 
 Rasterizer::Rasterizer() {
     albedoMap = Texture::createCheckerboard();
     normalMap = Texture::createFlatNormal();
+    shadowMap.resize(1024, 1024);
 }
 
 bool Rasterizer::loadMaterials() {
@@ -59,28 +66,53 @@ void Rasterizer::prevMaterial() {
     }
 }
 
-void Rasterizer::render(const Mesh& mesh, const Camera& camera, float aspect) {
-    // 【重点】MVP = P * V * M，依次：模型→世界→观察→裁剪
+void Rasterizer::moveLight(float dx, float dy, float dz) {
+    pointLight.position.x += dx;
+    pointLight.position.y += dy;
+    pointLight.position.z += dz;
+}
+
+void Rasterizer::renderScene(const std::vector<SceneObject>& objects, const Camera& camera,
+                             float aspect) {
+    shadowMap.msaaEnabled = fb.msaaEnabled;
+
+    if (shadowSceneEnabled) {
+        shadowMap.clear();
+        const Mat4 lightView = Mat4::lookAt(pointLight.position, lightTarget, Vec3{0.f, 1.f, 0.f});
+        const Mat4 lightProj = Mat4::perspective(90.f * kPi / 180.f, 1.f, 0.2f, 35.f);
+        lightViewProj = lightProj * lightView;
+
+        for (const SceneObject& obj : objects) {
+            if (!obj.castShadow || obj.material == ObjectMaterial::Emissive) continue;
+            renderMeshShadow(obj, lightViewProj);
+        }
+    }
+
     const Mat4 view = camera.viewMatrix();
     const Mat4 proj = Mat4::perspective(60.f * kPi / 180.f, aspect, 0.1f, 100.f);
-    const Mat4 mvp = proj * view * model;
-    const Mat4 normalMat = normalMatrix(model);
+    const Mat4 viewProj = proj * view;
 
-    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+    for (const SceneObject& obj : objects) {
+        if (shadowSceneEnabled || obj.material != ObjectMaterial::Emissive) {
+            renderMeshMain(obj, viewProj, camera.position);
+        }
+    }
+
+    fb.resolveMsaa();
+}
+
+void Rasterizer::buildClipTriangles(const SceneObject& obj, const Mat4& mvp,
+                                    std::vector<std::array<ClipVertex, 3>>& outTris) {
+    const Mat4 normalMat = normalMatrix(obj.model);
+
+    for (size_t i = 0; i + 2 < obj.mesh->indices.size(); i += 3) {
         std::array<ClipVertex, 3> tri{};
         for (int v = 0; v < 3; ++v) {
-            const Vertex& src = mesh.vertices[mesh.indices[i + v]];
+            const Vertex& src = obj.mesh->vertices[obj.mesh->indices[i + v]];
             const Vec4 clip = mvp.transformPoint(Vec4(src.position, 1.f));
 
             tri[v].position = clip;
-            tri[v].worldPos = {
-                model.m[0][0] * src.position.x + model.m[0][1] * src.position.y +
-                    model.m[0][2] * src.position.z + model.m[0][3],
-                model.m[1][0] * src.position.x + model.m[1][1] * src.position.y +
-                    model.m[1][2] * src.position.z + model.m[1][3],
-                model.m[2][0] * src.position.x + model.m[2][1] * src.position.y +
-                    model.m[2][2] * src.position.z + model.m[2][3],
-            };
+            tri[v].worldPos = transformPoint3(obj.model, src.position);
             tri[v].worldNormal = transformNormal(normalMat, src.normal);
             tri[v].worldTangent = transformNormal(normalMat, src.tangent);
             tri[v].color = src.color;
@@ -88,20 +120,37 @@ void Rasterizer::render(const Mesh& mesh, const Camera& camera, float aspect) {
             tri[v].invW = clip.w > 1e-6f ? (1.f / clip.w) : 1.f;
         }
 
-        // 裁剪阶段：CVV 外的部分切掉，可能产生 3~4 边形，再三角化
         std::vector<ClipVertex> clipped;
         if (!clipTriangle(tri, clipped)) continue;
 
         for (size_t t = 0; t + 2 < clipped.size(); t += 3) {
-            drawTriangle(clipped[t], clipped[t + 1], clipped[t + 2], camera.position);
+            outTris.push_back({clipped[t], clipped[t + 1], clipped[t + 2]});
         }
     }
+}
 
-    fb.resolveMsaa();
+void Rasterizer::renderMeshShadow(const SceneObject& obj, const Mat4& lightVP) {
+    const Mat4 mvp = lightVP * obj.model;
+    std::vector<std::array<ClipVertex, 3>> tris;
+    buildClipTriangles(obj, mvp, tris);
+
+    for (const auto& tri : tris) {
+        drawTriangleShadow(tri[0], tri[1], tri[2]);
+    }
+}
+
+void Rasterizer::renderMeshMain(const SceneObject& obj, const Mat4& viewProj,
+                                const Vec3& cameraPos) {
+    const Mat4 mvp = viewProj * obj.model;
+    std::vector<std::array<ClipVertex, 3>> tris;
+    buildClipTriangles(obj, mvp, tris);
+
+    for (const auto& tri : tris) {
+        drawTriangleColor(tri[0], tri[1], tri[2], obj, cameraPos);
+    }
 }
 
 Vec2 Rasterizer::toScreen(const Vec4& clipPos, int width, int height) {
-    // clip.w 在 OpenGL 透视下等于 -viewZ；必须 w>0 才是相机前方
     if (clipPos.w <= 1e-6f) {
         return {-1e6f, -1e6f};
     }
@@ -143,7 +192,7 @@ ClipVertex Rasterizer::lerpClip(const ClipVertex& a, const ClipVertex& b, float 
 ClipVertex Rasterizer::clipAgainstPlane(const ClipVertex& a, const ClipVertex& b, int plane) {
     const auto dist = [plane](const Vec4& p) {
         switch (plane) {
-            case -1: return p.w;  // 相机前方：w > 0
+            case -1: return p.w;
             case 0: return p.w - p.x;
             case 1: return p.w + p.x;
             case 2: return p.w - p.y;
@@ -162,7 +211,6 @@ ClipVertex Rasterizer::clipAgainstPlane(const ClipVertex& a, const ClipVertex& b
 bool Rasterizer::clipTriangle(std::array<ClipVertex, 3> in, std::vector<ClipVertex>& out) {
     std::vector<ClipVertex> poly(in.begin(), in.end());
 
-    // 先剔除相机后方（clip.w <= 0）
     {
         std::vector<ClipVertex> next;
         const size_t n = poly.size();
@@ -181,8 +229,6 @@ bool Rasterizer::clipTriangle(std::array<ClipVertex, 3> in, std::vector<ClipVert
         poly.swap(next);
     }
 
-    // 【重点】CVV：clip 空间下 |x|,|y|,|z| <= w 的齐次立方体
-    // 透视除法前裁剪，避免 w<0 导致的投影错误
     for (int plane = 0; plane < 6; ++plane) {
         if (poly.empty()) return false;
         std::vector<ClipVertex> next;
@@ -214,7 +260,6 @@ bool Rasterizer::clipTriangle(std::array<ClipVertex, 3> in, std::vector<ClipVert
 
     if (poly.size() < 3) return false;
 
-    // 凸多边形扇形三角化
     out.clear();
     for (size_t i = 1; i + 1 < poly.size(); ++i) {
         out.push_back(poly[0]);
@@ -246,15 +291,75 @@ void Rasterizer::drawLine(int x0, int y0, int x1, int y1, uint32_t color, float 
     }
 }
 
-void Rasterizer::drawPoint(int x, int y, uint32_t color, float z) {
-    fb.putPixel(x, y, color, z);
+std::optional<float> Rasterizer::shadowDepthAt(float px, float py, const Vec2& sa, const Vec2& sb,
+                                               const Vec2& sc, const ClipVertex& a,
+                                               const ClipVertex& b, const ClipVertex& c,
+                                               float areaInv) const {
+    const float wA = ((sb.x - px) * (sc.y - py) - (sc.x - px) * (sb.y - py)) * areaInv;
+    const float wB = ((sc.x - px) * (sa.y - py) - (sa.x - px) * (sc.y - py)) * areaInv;
+    const float wC = 1.f - wA - wB;
+
+    if (wA < 0.f || wB < 0.f || wC < 0.f) return std::nullopt;
+
+    const float invW = wA * a.invW + wB * b.invW + wC * c.invW;
+    if (invW <= 1e-8f) return std::nullopt;
+
+    // 与主 Z-Buffer 一致：透视矫正后的 clip.w，越小越近
+    return 1.f / invW;
+}
+
+void Rasterizer::drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c) {
+    const Vec2 sa = toScreen(a.position, shadowMap.width, shadowMap.height);
+    const Vec2 sb = toScreen(b.position, shadowMap.width, shadowMap.height);
+    const Vec2 sc = toScreen(c.position, shadowMap.width, shadowMap.height);
+    if (sa.x < -1e5f || sb.x < -1e5f || sc.x < -1e5f) return;
+
+    const float area =
+        (sb.x - sa.x) * (sc.y - sa.y) - (sc.x - sa.x) * (sb.y - sa.y);
+    if (area >= 0.f) return;
+
+    const int minX = std::max(0, static_cast<int>(std::floor(std::min({sa.x, sb.x, sc.x}))));
+    const int maxX =
+        std::min(shadowMap.width - 1, static_cast<int>(std::ceil(std::max({sa.x, sb.x, sc.x}))));
+    const int minY = std::max(0, static_cast<int>(std::floor(std::min({sa.y, sb.y, sc.y}))));
+    const int maxY =
+        std::min(shadowMap.height - 1, static_cast<int>(std::ceil(std::max({sa.y, sb.y, sc.y}))));
+
+    const float areaInv = 1.f / area;
+
+    for (int y = minY; y <= maxY; ++y) {
+        for (int x = minX; x <= maxX; ++x) {
+            if (shadowMap.msaaEnabled) {
+                for (int s = 0; s < ShadowMap::kMsaaSamples; ++s) {
+                    const Vec2& offset = Framebuffer::msaaOffsets()[s];
+                    const float px = static_cast<float>(x) + offset.x;
+                    const float py = static_cast<float>(y) + offset.y;
+
+                    const auto depth =
+                        shadowDepthAt(px, py, sa, sb, sc, a, b, c, areaInv);
+                    if (depth) {
+                        shadowMap.putSample(x, y, s, *depth);
+                    }
+                }
+            } else {
+                const float px = static_cast<float>(x) + 0.5f;
+                const float py = static_cast<float>(y) + 0.5f;
+                const auto depth =
+                    shadowDepthAt(px, py, sa, sb, sc, a, b, c, areaInv);
+                if (depth) {
+                    shadowMap.putSample(x, y, 0, *depth);
+                }
+            }
+        }
+    }
 }
 
 std::optional<ShadedFragment> Rasterizer::shadeAt(float px, float py, const Vec2& sa,
-                                                  const Vec2& sb, const Vec2& sc,
-                                                  const ClipVertex& a, const ClipVertex& b,
-                                                  const ClipVertex& c, float areaInv,
-                                                  const Vec3& cameraPos) const {
+                                                    const Vec2& sb, const Vec2& sc,
+                                                    const ClipVertex& a, const ClipVertex& b,
+                                                    const ClipVertex& c, float areaInv,
+                                                    const SceneObject& obj, int msaaSample,
+                                                    const Vec3& cameraPos) const {
     const float wA = ((sb.x - px) * (sc.y - py) - (sc.x - px) * (sb.y - py)) * areaInv;
     const float wB = ((sc.x - px) * (sa.y - py) - (sa.x - px) * (sc.y - py)) * areaInv;
     const float wC = 1.f - wA - wB;
@@ -278,23 +383,49 @@ std::optional<ShadedFragment> Rasterizer::shadeAt(float px, float py, const Vec2
     const Vec3 worldTangent = perspLerp3(a.worldTangent, b.worldTangent, c.worldTangent);
     const Vec2 uv = perspLerp2(a.uv, b.uv, c.uv);
 
-    const Vec3 albedo = albedoMap.sampleBilinear(uv.x, uv.y);
+    ShadedFragment out;
+    out.depth = 1.f / invW;
 
-    if (normalMappingEnabled && normalMap.valid()) {
-        const Vec3 nTangent = normalMap.sampleNormalMap(uv.x, uv.y, normalMapFlipY);
-        worldNormal = tangentToWorld(nTangent, worldNormal, worldTangent);
+    if (obj.material == ObjectMaterial::Emissive) {
+        out.color = obj.emissiveColor;
+        return out;
     }
 
-    const float depth = 1.f / invW;
+    Vec3 albedo = obj.flatColor;
+    if (obj.material == ObjectMaterial::Textured) {
+        albedo = albedoMap.sampleBilinear(uv.x, uv.y);
+        if (normalMappingEnabled && normalMap.valid()) {
+            const Vec3 nTangent = normalMap.sampleNormalMap(uv.x, uv.y, normalMapFlipY);
+            worldNormal = tangentToWorld(nTangent, worldNormal, worldTangent);
+        }
+    }
 
-    ShadedFragment out;
-    out.color = blinnPhong(worldPos, worldNormal, cameraPos, albedo, light);
-    out.depth = depth;
+    if (shadowSceneEnabled) {
+        float shadowFactor = 1.f;
+        if (obj.receiveShadow) {
+            const Vec4 lc = lightViewProj.transformPoint(Vec4(worldPos, 1.f));
+            if (lc.w > 1e-6f) {
+                const float lcInvW = 1.f / lc.w;
+                const float u = lc.x * lcInvW * 0.5f + 0.5f;
+                const float v = 1.f - (lc.y * lcInvW * 0.5f + 0.5f);
+                const float fragDepth = lc.w;
+                const float mapDepth = shadowMap.sampleDepthAt(u, v, msaaSample);
+                if (mapDepth < std::numeric_limits<float>::infinity() &&
+                    fragDepth > mapDepth + shadowBias) {
+                    shadowFactor = 0.18f;
+                }
+            }
+        }
+        out.color = blinnPhongPoint(worldPos, worldNormal, cameraPos, albedo, pointLight, shadowFactor);
+    } else {
+        out.color = blinnPhong(worldPos, worldNormal, cameraPos, albedo, light);
+    }
+
     return out;
 }
 
-void Rasterizer::drawTriangle(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
-                              const Vec3& cameraPos) {
+void Rasterizer::drawTriangleColor(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
+                                   const SceneObject& obj, const Vec3& cameraPos) {
     const Vec2 sa = toScreen(a.position, fb.width, fb.height);
     const Vec2 sb = toScreen(b.position, fb.width, fb.height);
     const Vec2 sc = toScreen(c.position, fb.width, fb.height);
@@ -306,7 +437,6 @@ void Rasterizer::drawTriangle(const ClipVertex& a, const ClipVertex& b, const Cl
 
     if (mode == RenderMode::Wireframe) {
         const uint32_t col = Framebuffer::packColor({1.f, 1.f, 1.f});
-        // 线框用顶点 NDC 深度均值即可
         const float depth = (ndcA.z + ndcB.z + ndcC.z) / 3.f;
         drawLine(static_cast<int>(sa.x), static_cast<int>(sa.y), static_cast<int>(sb.x),
                  static_cast<int>(sb.y), col, depth);
@@ -317,8 +447,6 @@ void Rasterizer::drawTriangle(const ClipVertex& a, const ClipVertex& b, const Cl
         return;
     }
 
-    // 背面剔除：toScreen 做了 Y 翻转（NDC Y↑ → 屏幕 Y↓），
-    // 模型空间 CCW 正面在屏幕空间变为 CW（area < 0），应剔除 CCW 背面（area >= 0）
     const float area =
         (sb.x - sa.x) * (sc.y - sa.y) - (sc.x - sa.x) * (sb.y - sa.y);
     if (area >= 0.f) return;
@@ -341,7 +469,7 @@ void Rasterizer::drawTriangle(const ClipVertex& a, const ClipVertex& b, const Cl
                     const float py = static_cast<float>(y) + offset.y;
 
                     const auto frag =
-                        shadeAt(px, py, sa, sb, sc, a, b, c, areaInv, cameraPos);
+                        shadeAt(px, py, sa, sb, sc, a, b, c, areaInv, obj, s, cameraPos);
                     if (frag) {
                         fb.putSample(x, y, s, frag->color, frag->depth);
                     }
@@ -350,7 +478,7 @@ void Rasterizer::drawTriangle(const ClipVertex& a, const ClipVertex& b, const Cl
                 const float px = static_cast<float>(x) + 0.5f;
                 const float py = static_cast<float>(y) + 0.5f;
                 const auto frag =
-                    shadeAt(px, py, sa, sb, sc, a, b, c, areaInv, cameraPos);
+                    shadeAt(px, py, sa, sb, sc, a, b, c, areaInv, obj, -1, cameraPos);
                 if (frag) {
                     fb.putPixel(x, y, Framebuffer::packColor(frag->color), frag->depth);
                 }

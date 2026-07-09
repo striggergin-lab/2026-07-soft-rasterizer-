@@ -3,23 +3,26 @@
 #include "math/Mat4.h"
 #include "math/Vec3.h"
 
-// 轨道相机：绕原点旋转，右键拖拽改变 yaw/pitch
+// 轨道相机：围绕 target 旋转，始终 lookAt(target)
 struct Camera {
-    Vec3 position{0.f, 0.f, 2.5f};
-    float yaw = 3.14159265f;  // 默认从 +Z 侧看向原点
-    float pitch = 0.f;
-    float orbitRadius = 2.5f;
-    float moveSpeed = 2.5f;
-    float rotateSpeed = 0.01f;
+    Vec3 position{};
+    Vec3 target{0.f, 0.f, 0.f};
+
+    float yaw = 0.785398f;    // 弧度，绕 Y 轴
+    float pitch = 0.615479f;  // 弧度，仰角（>0 相机在目标上方）
+    float distance = 3.6f;
+
+    float orbitSpeed = 0.006f;
+    float panSpeed = 0.002f;
+    float zoomSpeed = 0.35f;
+    float minDistance = 1.5f;
+    float maxDistance = 30.f;
 
     Mat4 viewMatrix() const;
-    Vec3 forward() const;
-    Vec3 right() const;
-    Vec3 up() const;
+    void syncPosition();
+    void setView(const Vec3& focus, const Vec3& cameraPos);
 
-    void rotate(float dx, float dy);
-    void syncOrbitPosition();
+    void orbit(float dx, float dy);
+    void pan(float dx, float dy);
     void scrollZoom(float wheelDelta);
-    void moveRight(float dt);
-    void moveUp(float dt);
 };
