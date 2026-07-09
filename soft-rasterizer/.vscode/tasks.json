@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Release x64",
+      "type": "shell",
+      "command": "${input:msbuildPath}",
+      "args": [
+        "${workspaceFolder}/soft_rasterizer.sln",
+        "/p:Configuration=Release",
+        "/p:Platform=x64",
+        "/m"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "Build Debug x64",
+      "type": "shell",
+      "command": "${input:msbuildPath}",
+      "args": [
+        "${workspaceFolder}/soft_rasterizer.sln",
+        "/p:Configuration=Debug",
+        "/p:Platform=x64",
+        "/m"
+      ],
+      "group": "build",
+      "problemMatcher": "$msCompile"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "msbuildPath",
+      "type": "pickString",
+      "description": "选择 MSBuild（按你安装的 VS 版本）",
+      "options": [
+        "C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2017/Community/MSBuild/15.0/Bin/MSBuild.exe"
+      ],
+      "default": "C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe"
+    }
+  ]
+}

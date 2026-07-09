@@ -1,0 +1,6 @@
+C:\Users\Administrator\Projects\soft-rasterizer\src\main.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Debug\main.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\math\Mat4.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Debug\Mat4.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\core\Camera.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Debug\Camera.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\core\Mesh.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Debug\Mesh.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\render\Rasterizer.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Debug\Rasterizer.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\render\Lighting.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Debug\Lighting.obj
