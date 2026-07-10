@@ -7,6 +7,7 @@
 #include "math/Mat4.h"
 #include "math/Vec2.h"
 #include "math/Vec4.h"
+#include "render/BloomPass.h"
 #include "render/Lighting.h"
 #include "render/MaterialLibrary.h"
 #include "render/ShadowMap.h"
@@ -31,11 +32,13 @@ struct ClipVertex {
 struct ShadedFragment {
     Vec3 color;
     float depth = 0.f;
+    float alpha = 1.f;
 };
 
 struct Rasterizer {
     Framebuffer fb;
     ShadowMap shadowMap;
+    BloomPass bloom;
     RenderMode mode = RenderMode::Solid;
     DirectionalLight light{};
     PointLight pointLight{};
@@ -47,6 +50,7 @@ struct Rasterizer {
     bool normalMapFlipY = false;
 
     bool shadowSceneEnabled = true;
+    bool bloomEnabled = true;
     Vec3 lightTarget{0.f, 0.f, 0.f};
     float lightMoveSpeed = 4.f;
     float shadowBias = 0.02f;
@@ -67,7 +71,8 @@ private:
     void applyCurrentMaterial();
 
     void renderMeshShadow(const SceneObject& obj, const Mat4& lightViewProj);
-    void renderMeshMain(const SceneObject& obj, const Mat4& viewProj, const Vec3& cameraPos);
+    void renderMeshMain(const SceneObject& obj, const Mat4& viewProj, const Vec3& cameraPos,
+                        const Vec3& blendBg = {0.53f, 0.53f, 0.56f});
 
     std::optional<ShadedFragment> shadeAt(float px, float py, const Vec2& sa, const Vec2& sb,
                                           const Vec2& sc, const ClipVertex& a, const ClipVertex& b,
@@ -79,8 +84,9 @@ private:
                                        const ClipVertex& c, float areaInv) const;
 
     void drawTriangleColor(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
-                           const SceneObject& obj, const Vec3& cameraPos);
-    void drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c);
+                           const SceneObject& obj, const Vec3& cameraPos, const Vec3& blendBg);
+    void drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
+                            float shadowStrength);
 
     void buildClipTriangles(const SceneObject& obj, const Mat4& mvp, std::vector<std::array<ClipVertex, 3>>& outTris);
 

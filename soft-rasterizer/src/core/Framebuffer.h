@@ -29,16 +29,16 @@ struct Framebuffer {
     void resize(int w, int h) {
         width = w;
         height = h;
-        color.assign(static_cast<size_t>(w * h), 0xFF404060);
+        color.assign(static_cast<size_t>(w * h), 0xFFFFFFFF);
         depth.assign(static_cast<size_t>(w * h), std::numeric_limits<float>::infinity());
 
         const size_t sampleCount = static_cast<size_t>(w * h * kMsaaSamples);
-        sampleColor.assign(sampleCount, Vec3{0.25f, 0.25f, 0.38f});
+        sampleColor.assign(sampleCount, Vec3{1.f, 1.f, 1.f});
         sampleDepth.assign(sampleCount, std::numeric_limits<float>::infinity());
         sampleValid.assign(sampleCount, 0);
     }
 
-    void clear(uint32_t c = 0xFF404060) {
+    void clear(uint32_t c = 0xFFFFFFFF) {
         std::fill(color.begin(), color.end(), c);
         std::fill(depth.begin(), depth.end(), std::numeric_limits<float>::infinity());
 
@@ -72,6 +72,44 @@ struct Framebuffer {
         }
     }
 
+    // Alpha 混合（srcOver）：半透明不写深度，仅做深度测试
+    void putSampleBlend(int x, int y, int sample, const Vec3& rgb, float alpha, float z,
+                        const Vec3& bg) {
+        if (!inBounds(x, y) || sample < 0 || sample >= kMsaaSamples) return;
+        const size_t idx = static_cast<size_t>(y * width + x) * kMsaaSamples + sample;
+
+        if (alpha >= 0.999f) {
+            putSample(x, y, sample, rgb, z);
+            return;
+        }
+
+        if (sampleValid[idx] && z >= sampleDepth[idx]) {
+            return;
+        }
+
+        const Vec3 dst = sampleValid[idx] ? sampleColor[idx] : bg;
+        sampleColor[idx] = rgb * alpha + dst * (1.f - alpha);
+        sampleValid[idx] = 1;
+    }
+
+    void putPixelBlend(int x, int y, const Vec3& rgb, float alpha, float z, const Vec3& bg) {
+        if (!inBounds(x, y)) return;
+        const size_t idx = static_cast<size_t>(y * width + x);
+
+        if (alpha >= 0.999f) {
+            putPixel(x, y, packColor(rgb), z);
+            return;
+        }
+
+        if (depth[idx] < std::numeric_limits<float>::infinity() && z >= depth[idx]) {
+            return;
+        }
+
+        const Vec3 dst =
+            depth[idx] < std::numeric_limits<float>::infinity() ? unpackColor(color[idx]) : bg;
+        color[idx] = packColor(rgb * alpha + dst * (1.f - alpha));
+    }
+
     // MSAA resolve：对每个像素的有效子采样取平均
     void resolveMsaa() {
         if (!msaaEnabled) return;
@@ -99,7 +137,7 @@ struct Framebuffer {
                         }
                     }
                 } else {
-                    color[idx] = 0xFF888890;
+                    color[idx] = 0xFFFFFFFF;
                     depth[idx] = std::numeric_limits<float>::infinity();
                 }
             }

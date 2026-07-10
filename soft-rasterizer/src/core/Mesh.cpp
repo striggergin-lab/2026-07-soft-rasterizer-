@@ -82,9 +82,59 @@ Mesh Mesh::createSphere(float radius, int slices, int stacks) {
             const unsigned int b = a + static_cast<unsigned int>(ring);
             const unsigned int c = b + 1;
             const unsigned int d = a + 1;
-            sphere.indices.insert(sphere.indices.end(), {a, b, c, a, c, d});
+            sphere.indices.insert(sphere.indices.end(), {a, c, b, a, d, c});
         }
     }
 
     return sphere;
+}
+
+namespace {
+
+void addWallQuad(Mesh& mesh, Mesh::WallFacing facing, float y0, float y1, float h0, float h1) {
+    const Vec3 white{1.f, 1.f, 1.f};
+    const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+
+    if (facing == Mesh::WallFacing::PosX) {
+        const Vec3 n{1.f, 0.f, 0.f};
+        const Vec3 t{0.f, 0.f, -1.f};
+        // 与 createCube +X 面一致的绕序，法线朝 +X
+        mesh.vertices.push_back({{0.f, y0, h1}, n, t, white, {0.f, 0.f}});
+        mesh.vertices.push_back({{0.f, y0, h0}, n, t, white, {1.f, 0.f}});
+        mesh.vertices.push_back({{0.f, y1, h0}, n, t, white, {1.f, 1.f}});
+        mesh.vertices.push_back({{0.f, y1, h1}, n, t, white, {0.f, 1.f}});
+    } else {
+        const Vec3 n{0.f, 0.f, 1.f};
+        const Vec3 t{1.f, 0.f, 0.f};
+        mesh.vertices.push_back({{h0, y0, 0.f}, n, t, white, {0.f, 0.f}});
+        mesh.vertices.push_back({{h1, y0, 0.f}, n, t, white, {1.f, 0.f}});
+        mesh.vertices.push_back({{h1, y1, 0.f}, n, t, white, {1.f, 1.f}});
+        mesh.vertices.push_back({{h0, y1, 0.f}, n, t, white, {0.f, 1.f}});
+    }
+
+    mesh.indices.insert(mesh.indices.end(),
+                        {base, base + 1, base + 2, base, base + 2, base + 3});
+}
+
+}  // namespace
+
+Mesh Mesh::createWall(float width, float height, WallFacing facing) {
+    Mesh wall;
+    addWallQuad(wall, facing, 0.f, height, 0.f, width);
+    return wall;
+}
+
+Mesh Mesh::createWallWithWindow(float width, float height, float winW, float winH,
+                                WallFacing facing) {
+    Mesh wall;
+    const float cx = width * 0.5f;
+    const float winH0 = cx - winW * 0.5f;
+    const float winH1 = cx + winW * 0.5f;
+    const float winY0 = 0.f;
+    const float winY1 = winH;
+
+    addWallQuad(wall, facing, winY1, height, 0.f, width);
+    addWallQuad(wall, facing, winY0, winY1, 0.f, winH0);
+    addWallQuad(wall, facing, winY0, winY1, winH1, width);
+    return wall;
 }

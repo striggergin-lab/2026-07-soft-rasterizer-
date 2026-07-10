@@ -3,6 +3,8 @@ C:\Users\Administrator\Projects\soft-rasterizer\src\math\Mat4.cpp;C:\Users\Admin
 C:\Users\Administrator\Projects\soft-rasterizer\src\core\AssetPath.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\AssetPath.obj
 C:\Users\Administrator\Projects\soft-rasterizer\src\core\Camera.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\Camera.obj
 C:\Users\Administrator\Projects\soft-rasterizer\src\core\Mesh.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\Mesh.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\render\ColorGrade.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\ColorGrade.obj
+C:\Users\Administrator\Projects\soft-rasterizer\src\render\BloomPass.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\BloomPass.obj
 C:\Users\Administrator\Projects\soft-rasterizer\src\render\MaterialLibrary.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\MaterialLibrary.obj
 C:\Users\Administrator\Projects\soft-rasterizer\src\render\Rasterizer.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\Rasterizer.obj
 C:\Users\Administrator\Projects\soft-rasterizer\src\render\Lighting.cpp;C:\Users\Administrator\Projects\soft-rasterizer\soft_rasterizer\x64\Release\Lighting.obj

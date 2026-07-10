@@ -76,6 +76,13 @@ void Rasterizer::renderScene(const std::vector<SceneObject>& objects, const Came
                              float aspect) {
     shadowMap.msaaEnabled = fb.msaaEnabled;
 
+    if (bloom.width != fb.width || bloom.height != fb.height) {
+        bloom.resize(fb.width, fb.height);
+    }
+    if (bloomEnabled) {
+        bloom.clear();
+    }
+
     if (shadowSceneEnabled) {
         shadowMap.clear();
         const Mat4 lightView = Mat4::lookAt(pointLight.position, lightTarget, Vec3{0.f, 1.f, 0.f});
@@ -93,12 +100,24 @@ void Rasterizer::renderScene(const std::vector<SceneObject>& objects, const Came
     const Mat4 viewProj = proj * view;
 
     for (const SceneObject& obj : objects) {
-        if (shadowSceneEnabled || obj.material != ObjectMaterial::Emissive) {
+        if (obj.alpha >= 0.999f) {
             renderMeshMain(obj, viewProj, camera.position);
         }
     }
 
+    const Vec3 bgColor = Framebuffer::unpackColor(0xFFFFFFFF);
+    for (const SceneObject& obj : objects) {
+        if (obj.alpha < 0.999f && obj.material != ObjectMaterial::Emissive) {
+            renderMeshMain(obj, viewProj, camera.position, bgColor);
+        }
+    }
+
     fb.resolveMsaa();
+
+    if (bloomEnabled) {
+        bloom.accumulateWhiteEdges(fb);
+        bloom.processAndComposite(fb);
+    }
 }
 
 void Rasterizer::buildClipTriangles(const SceneObject& obj, const Mat4& mvp,
@@ -135,18 +154,18 @@ void Rasterizer::renderMeshShadow(const SceneObject& obj, const Mat4& lightVP) {
     buildClipTriangles(obj, mvp, tris);
 
     for (const auto& tri : tris) {
-        drawTriangleShadow(tri[0], tri[1], tri[2]);
+        drawTriangleShadow(tri[0], tri[1], tri[2], obj.castShadowStrength);
     }
 }
 
 void Rasterizer::renderMeshMain(const SceneObject& obj, const Mat4& viewProj,
-                                const Vec3& cameraPos) {
+                                const Vec3& cameraPos, const Vec3& blendBg) {
     const Mat4 mvp = viewProj * obj.model;
     std::vector<std::array<ClipVertex, 3>> tris;
     buildClipTriangles(obj, mvp, tris);
 
     for (const auto& tri : tris) {
-        drawTriangleColor(tri[0], tri[1], tri[2], obj, cameraPos);
+        drawTriangleColor(tri[0], tri[1], tri[2], obj, cameraPos, blendBg);
     }
 }
 
@@ -304,11 +323,18 @@ std::optional<float> Rasterizer::shadowDepthAt(float px, float py, const Vec2& s
     const float invW = wA * a.invW + wB * b.invW + wC * c.invW;
     if (invW <= 1e-8f) return std::nullopt;
 
-    // 与主 Z-Buffer 一致：透视矫正后的 clip.w，越小越近
-    return 1.f / invW;
+    const auto perspLerp3 = [&](const Vec3& va, const Vec3& vb, const Vec3& vc) {
+        const Vec3 num = va * (wA * a.invW) + vb * (wB * b.invW) + vc * (wC * c.invW);
+        return num / invW;
+    };
+
+    // 点光源：存世界空间到光源的径向距离，比 clip.w 更符合「沿光线最近表面」
+    const Vec3 worldPos = perspLerp3(a.worldPos, b.worldPos, c.worldPos);
+    return (worldPos - pointLight.position).length();
 }
 
-void Rasterizer::drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c) {
+void Rasterizer::drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
+                                    float shadowStrength) {
     const Vec2 sa = toScreen(a.position, shadowMap.width, shadowMap.height);
     const Vec2 sb = toScreen(b.position, shadowMap.width, shadowMap.height);
     const Vec2 sc = toScreen(c.position, shadowMap.width, shadowMap.height);
@@ -338,7 +364,7 @@ void Rasterizer::drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, co
                     const auto depth =
                         shadowDepthAt(px, py, sa, sb, sc, a, b, c, areaInv);
                     if (depth) {
-                        shadowMap.putSample(x, y, s, *depth);
+                        shadowMap.putSample(x, y, s, *depth, shadowStrength);
                     }
                 }
             } else {
@@ -347,7 +373,7 @@ void Rasterizer::drawTriangleShadow(const ClipVertex& a, const ClipVertex& b, co
                 const auto depth =
                     shadowDepthAt(px, py, sa, sb, sc, a, b, c, areaInv);
                 if (depth) {
-                    shadowMap.putSample(x, y, 0, *depth);
+                    shadowMap.putSample(x, y, 0, *depth, shadowStrength);
                 }
             }
         }
@@ -385,6 +411,7 @@ std::optional<ShadedFragment> Rasterizer::shadeAt(float px, float py, const Vec2
 
     ShadedFragment out;
     out.depth = 1.f / invW;
+    out.alpha = obj.alpha;
 
     if (obj.material == ObjectMaterial::Emissive) {
         out.color = obj.emissiveColor;
@@ -400,32 +427,44 @@ std::optional<ShadedFragment> Rasterizer::shadeAt(float px, float py, const Vec2
         }
     }
 
+    // 若三角形绕序与法线不一致，保证法线朝向摄像机（仅影响光照，不改几何）
+    Vec3 shadingNormal = worldNormal.normalized();
+    const Vec3 viewDir = (cameraPos - worldPos).normalized();
+    if (shadingNormal.dot(viewDir) < 0.f) {
+        shadingNormal = shadingNormal * -1.f;
+    }
+
     if (shadowSceneEnabled) {
         float shadowFactor = 1.f;
         if (obj.receiveShadow) {
-            const Vec4 lc = lightViewProj.transformPoint(Vec4(worldPos, 1.f));
-            if (lc.w > 1e-6f) {
-                const float lcInvW = 1.f / lc.w;
-                const float u = lc.x * lcInvW * 0.5f + 0.5f;
-                const float v = 1.f - (lc.y * lcInvW * 0.5f + 0.5f);
-                const float fragDepth = lc.w;
-                const float mapDepth = shadowMap.sampleDepthAt(u, v, msaaSample);
-                if (mapDepth < std::numeric_limits<float>::infinity() &&
-                    fragDepth > mapDepth + shadowBias) {
-                    shadowFactor = 0.18f;
+            const Vec3 toLight = pointLight.position - worldPos;
+            const Vec3 l = toLight.normalized();
+            const float ndotl = std::max(shadingNormal.dot(l), 0.f);
+
+            // 仅对朝向光源的表面做 Shadow Map 比较；背光面本身无直射光，不应出现投影
+            if (ndotl > 1e-4f) {
+                const Vec4 lc = lightViewProj.transformPoint(Vec4(worldPos, 1.f));
+                if (lc.w > 1e-6f) {
+                    const float lcInvW = 1.f / lc.w;
+                    const float u = lc.x * lcInvW * 0.5f + 0.5f;
+                    const float v = 1.f - (lc.y * lcInvW * 0.5f + 0.5f);
+                    const float fragDist = (worldPos - pointLight.position).length();
+                    shadowFactor = shadowMap.computePcfShadowFactor(u, v, fragDist, shadowBias,
+                                                                    msaaSample);
                 }
             }
         }
-        out.color = blinnPhongPoint(worldPos, worldNormal, cameraPos, albedo, pointLight, shadowFactor);
+        out.color = blinnPhongPoint(worldPos, shadingNormal, cameraPos, albedo, pointLight, shadowFactor);
     } else {
-        out.color = blinnPhong(worldPos, worldNormal, cameraPos, albedo, light);
+        out.color = blinnPhongPoint(worldPos, shadingNormal, cameraPos, albedo, pointLight, 1.f);
     }
 
     return out;
 }
 
 void Rasterizer::drawTriangleColor(const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
-                                   const SceneObject& obj, const Vec3& cameraPos) {
+                                   const SceneObject& obj, const Vec3& cameraPos,
+                                   const Vec3& blendBg) {
     const Vec2 sa = toScreen(a.position, fb.width, fb.height);
     const Vec2 sb = toScreen(b.position, fb.width, fb.height);
     const Vec2 sc = toScreen(c.position, fb.width, fb.height);
@@ -471,7 +510,23 @@ void Rasterizer::drawTriangleColor(const ClipVertex& a, const ClipVertex& b, con
                     const auto frag =
                         shadeAt(px, py, sa, sb, sc, a, b, c, areaInv, obj, s, cameraPos);
                     if (frag) {
-                        fb.putSample(x, y, s, frag->color, frag->depth);
+                        const size_t sampleIdx =
+                            static_cast<size_t>(y * fb.width + x) * Framebuffer::kMsaaSamples + s;
+                        const bool passDepth =
+                            !fb.sampleValid[sampleIdx] || frag->depth < fb.sampleDepth[sampleIdx];
+
+                        if (frag->alpha >= 0.999f) {
+                            if (passDepth) {
+                                fb.putSample(x, y, s, frag->color, frag->depth);
+                                if (bloomEnabled && obj.material == ObjectMaterial::Emissive) {
+                                    bloom.putSample(x, y, frag->color * bloom.sourceIntensity,
+                                                    frag->depth);
+                                }
+                            }
+                        } else {
+                            fb.putSampleBlend(x, y, s, frag->color, frag->alpha, frag->depth,
+                                              blendBg);
+                        }
                     }
                 }
             } else {
@@ -480,7 +535,20 @@ void Rasterizer::drawTriangleColor(const ClipVertex& a, const ClipVertex& b, con
                 const auto frag =
                     shadeAt(px, py, sa, sb, sc, a, b, c, areaInv, obj, -1, cameraPos);
                 if (frag) {
-                    fb.putPixel(x, y, Framebuffer::packColor(frag->color), frag->depth);
+                    const size_t pixelIdx = static_cast<size_t>(y * fb.width + x);
+                    const bool passDepth = frag->depth < fb.depth[pixelIdx];
+
+                    if (frag->alpha >= 0.999f) {
+                        if (passDepth) {
+                            fb.putPixel(x, y, Framebuffer::packColor(frag->color), frag->depth);
+                            if (bloomEnabled && obj.material == ObjectMaterial::Emissive) {
+                                bloom.putSample(x, y, frag->color * bloom.sourceIntensity,
+                                                frag->depth);
+                            }
+                        }
+                    } else {
+                        fb.putPixelBlend(x, y, frag->color, frag->alpha, frag->depth, blendBg);
+                    }
                 }
             }
         }
